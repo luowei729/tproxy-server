@@ -314,9 +314,28 @@ can produce a list and is rejected.
 ./client-link.sh
 ```
 
-It prints the proxy server (`xxx.com/proxy`), the marked secret, and the
-`https://t.me/webproxy?...` link. The raw hex secret is only the MTProxy backend
-credential; never paste it into the client for a prefixed deployment.
+It prints four values, and the two secret spellings are not interchangeable:
+
+```text
+Proxy server:         origin.example.com/proxy
+Proxy secret (typed): 000102030405060708090a0b0c0d0e0f
+Link secret (marked): cAABAgMEBQYHCAkKCwwNDg8
+Proxy link:           https://t.me/webproxy?server=origin.example.com%2Fproxy&secret=cAABAgMEBQYHCAkKCwwNDg8
+```
+
+- **Typed entry** uses the plain hex secret even under a base path. The user
+  supplies the path in the server field, so nothing is ambiguous.
+- **A shared link** must use the marked form (`0x70 || secret`, base64url), so a
+  client without base path support rejects it instead of connecting to a pathless
+  proxy on an empty host.
+
+Some client builds reject the marked value when it is typed by hand and report
+an invalid secret; paste the hex form there instead. Others reject a link whose
+secret is unmarked. That is why both are printed.
+
+The raw hex secret is also the MTProxy backend credential. Rotate it with
+`openssl rand -hex 16` before distributing links; the value used throughout this
+document is a public test vector.
 
 ## MTProxy and NAT
 

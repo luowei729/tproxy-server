@@ -395,6 +395,12 @@ ambiguous. A shared *link* is the one place the secret changes form: under a bas
 path it must carry the marked value derived below, so the installer prints the two
 under separate labels and neither is pasted in the other's place.
 
+Some client builds reject the marked value when it is typed into the secret field
+and report an invalid secret. That is expected: paste the plain hex there, and use
+the marked form only inside a shared link. A client that accepts a typed link
+secret and rejects a marked one, or the reverse, is following this split rather
+than misbehaving.
+
 A shareable WEB proxy link is:
 
 ```text
