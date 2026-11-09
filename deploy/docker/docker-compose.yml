@@ -13,7 +13,8 @@ services:
       - .env
     # The container listens on 0.0.0.0:65501 because a published port cannot
     # reach a loopback-only listener. Publishing on 127.0.0.1 keeps the relay
-    # unreachable from the network; only the host nginx can proxy /proxy/ here.
+    # unreachable from the network; only the host nginx can proxy /proxy/ here,
+    # and that hop is plain HTTP: the relay has no certificate.
     ports:
       - "127.0.0.1:${TPROXY_HOST_PORT:-65501}:65501"
     volumes:

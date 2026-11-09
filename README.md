@@ -116,8 +116,14 @@ docker run -d --name tproxy --restart unless-stopped \
 ```
 
 `TPROXY_BASE_PATH` defaults to `proxy`; set it to any other prefix, or leave it
-empty for the host root. See [`deploy/docker/README.md`](deploy/docker/README.md)
-for the nginx location block, NAT settings, and verification steps.
+empty for the host root. The relay listens on plain HTTP at
+`http://127.0.0.1:65501` and has no certificate: nginx keeps the 443 TLS
+certificate and proxies `http://` to that loopback port. Inside the container the
+listener is `0.0.0.0:65501` only because a Docker published port cannot reach a
+loopback-only listener; the published port is bound to host `127.0.0.1`, so the
+relay is unreachable from the network. See
+[`deploy/docker/README.md`](deploy/docker/README.md) for the nginx location block,
+NAT settings, and verification steps.
 
 ## What you need
 

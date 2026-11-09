@@ -157,6 +157,11 @@ build, not just another platform entry.
 
 ## nginx on the same host
 
+The hop from nginx to the container is plain HTTP: `http://127.0.0.1:65501`.
+The relay never terminates TLS and has no certificate. nginx keeps the 443
+certificate and the website, so do not add `proxy_ssl_*`, `ssl` on the upstream,
+or an `https://` upstream address.
+
 ```nginx
 map $http_upgrade $connection_upgrade {
     default upgrade;
@@ -164,7 +169,7 @@ map $http_upgrade $connection_upgrade {
 }
 
 upstream tproxy_relay {
-    server 127.0.0.1:65501;
+    server 127.0.0.1:65501;         # plain HTTP, no TLS
     keepalive 32;
 }
 
@@ -178,7 +183,7 @@ server {
     client_max_body_size 4m;        # carrier batches reach 2 MiB
 
     location ^~ /proxy/ {
-        proxy_pass http://tproxy_relay;
+        proxy_pass http://tproxy_relay;   # http://, not https://
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $remote_addr;
@@ -196,6 +201,13 @@ server {
     }
 }
 ```
+
+Inside the container the relay binds `0.0.0.0:65501`, because a Docker published
+port cannot reach a loopback-only listener. That address is container-internal:
+the published port is bound to `127.0.0.1` on the host, so from nginx and from the
+host the only address is `http://127.0.0.1:65501`, and nothing on the network can
+reach it directly. `container_network: true` in the generated config exists only
+to permit that non-loopback container listener and peer.
 
 Keep the decoy consistent: `TPROXY_SITE_DIR` should mirror the same site, so a
 probe of `/proxy/whatever` receives the website's own 404 rather than a
