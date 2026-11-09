@@ -332,6 +332,82 @@ docker logs tproxy 2>&1 | grep -c 'Disconnected from RPC Middle-End'
 
 持续增长就说明地址对错了。
 
+### 性能调优
+
+如果感觉比 SOCKS5 直连慢，先看载波模式，这是最大的单一因素。
+
+**1. 把 `carrier_mode` 改成 `websocket`**
+
+默认的 `https` 模式是停等式传输：上行在 `page.go` 里由 `upRunning` 串行化，同一
+时刻只有一个 POST 在途；下行只有一条长轮询。吞吐上限约为
+`carrier_batch_bytes / RTT`，而且每一批数据都是一次完整的 HTTP 请求，要穿过每一
+跳 nginx。
+
+`websocket` 是一条全双工长连接，没有逐批请求开销，也没有 25 秒轮询周期：
+
+```bash
+-e TPROXY_CARRIER_MODE=websocket
+```
+
+客户端不需要任何改动，模式由 profile 决定并嵌入 bridge 页面。
+
+**2. nginx 必须放行 Upgrade**
+
+WebSocket 握手是 HTTP/1.1，`$connection_upgrade` 要先在 `http` 上下文定义
+（见上文「nginx 反代配置」）。长连接的超时要远大于普通反代：
+
+```nginx
+proxy_set_header Upgrade $http_upgrade;
+proxy_set_header Connection $connection_upgrade;
+proxy_read_timeout 3600s;
+proxy_send_timeout 3600s;
+proxy_socket_keepalive on;
+```
+
+**3. MTProxy workers 跟随 CPU 核数**
+
+```bash
+-e MTPROXY_WORKERS=2 -e MTPROXY_MAX_CONNECTIONS=8192
+```
+
+一个 worker 单核跑满后才加第二个；再加不会加速 relay 和 nginx。
+
+**4. 内核 TCP**
+
+高延迟国际链路上 BBR 比 cubic 明显更好：
+
+```bash
+cat > /etc/sysctl.d/99-tproxy-perf.conf <<'EOF'
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.ipv4.tcp_rmem = 4096 87380 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
+net.ipv4.tcp_notsent_lowat = 131072
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_slow_start_after_idle = 0
+EOF
+modprobe tcp_bbr && sysctl -p /etc/sysctl.d/99-tproxy-perf.conf
+```
+
+**5. 确认没有触到限流**
+
+```bash
+docker exec tproxy curl -s http://127.0.0.1:65502/metrics | grep limit_hits
+```
+
+`limit_hits` 持续增长说明 `max_streams_per_session` 或全局桶不够，Telegram 的连接数
+比预期多。
+
+**为什么仍然可能不如 SOCKS5**
+
+链路本身多出几跳：WebView 的 Fetch/WebSocket 栈 → nginx（L7 反代）→ Go relay 的
+帧复用 → MTProxy → Telegram。SOCKS5 通常是一条直连 TCP。载波模式只能消除传输层
+的停等，不能消除这些跳数。若还需要更快，只能减少跳数（例如让中转机直接承载
+relay），或改用 `websocket-lanes` 让媒体流和交互流各自独立。
+
 ### 客户端填写
 
 ```
