@@ -225,6 +225,8 @@ certificate and the website, so do not add `proxy_ssl_*`, `ssl` on the upstream,
 or an `https://` upstream address.
 
 ```nginx
+# $connection_upgrade is not built in. Define it once in the http context.
+# Without this map, nginx fails with `unknown "connection_upgrade" variable`.
 map $http_upgrade $connection_upgrade {
     default upgrade;
     ''      "";
@@ -263,6 +265,31 @@ server {
     }
 }
 ```
+
+The `map` belongs in the `http` context, never inside a `server` block. A panel
+that only exposes a per-site `server` block, such as 1Panel/OpenResty, needs the
+map added separately, for example in a file picked up by the `http` include:
+
+```bash
+# Adjust to your install; find it with:
+#   grep -n include /usr/local/openresty/nginx/conf/nginx.conf
+cat > /opt/1panel/apps/openresty/openresty/conf/conf.d/00-upgrade-map.conf <<'EOF'
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      "";
+}
+EOF
+openresty -t && openresty -s reload
+```
+
+If a panel regenerates its configuration, put the map in the panel's global or
+custom configuration instead.
+
+The `Upgrade` and `Connection` headers are only needed for the `websocket` and
+`websocket-lanes` carrier modes. The default profile uses `https`, so a
+configuration that cannot add the map can simply omit both lines, or set
+`Connection "upgrade"` unconditionally. Never send `$http_connection` verbatim:
+it forwards the client's own `keep-alive` value to the upstream.
 
 Inside the container the relay binds `0.0.0.0:65501`, because a Docker published
 port cannot reach a loopback-only listener. That address is container-internal:
