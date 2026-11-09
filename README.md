@@ -77,34 +77,34 @@ relay path for an unauthenticated prober to compare with the public site, and on
 `GET /?bridge=<valid capability>` reveals the bridge. Restart the relay after
 changing files under `public_dir`; the static site is read once at start-up.
 
-## Docker deployment
+## Docker 部署
 
-[`deploy/docker/`](deploy/docker/README.md) packages the relay and the official
-MTProxy in one image for a host that already runs an HTTPS website on port 443.
-The container publishes only `127.0.0.1:65501`, and the existing server proxies
-one path prefix — `proxy` by default, configurable — to it:
+[`deploy/docker/`](deploy/docker/README.md) 把 relay 和官方 MTProxy 打进同一个镜像，
+适用于已经有一个 HTTPS 网站在 443 端口运行的服务器。容器只在 `127.0.0.1:65501`
+上发布端口，由现有服务器把某一个路径前缀（默认 `proxy`，可自定义）反代进来：
 
 ```text
-Telegram app (hostname = xxx.com, port 443)
-      -> existing nginx :443
-      -> location ^~ /proxy/  -> 127.0.0.1:65501 -> tproxy container
+Telegram 客户端（域名 = origin.example.com，端口固定 443）
+      -> 现有 nginx :443
+      -> location ^~ /proxy/  -> 127.0.0.1:65501 -> tproxy 容器
                                                     -> 127.0.0.1:2398 MTProxy
 ```
 
-`/proxy/` is the relay base path, so the bridge lives at
-`https://xxx.com/proxy/?bridge=<capability>`. No client setting changes: the
-hostname stays `xxx.com`, and the path is part of the configured proxy address.
-The image is Debian-based because the pinned MTProxy source needs glibc, and it
-uses a bridge network so MTProxy is never reachable from the host or the
-internet. `.github/workflows/docker.yml` runs the Go tests, then builds and
-pushes `linux/amd64` to GHCR; the server pulls it with `docker compose pull`.
+`/proxy/` 就是 relay 的 base path，所以 bridge 页面位于
+`https://origin.example.com/proxy/?bridge=<capability>`。客户端不需要任何新设置：
+域名仍然是 `origin.example.com`，路径是"代理服务器"字段的一部分。
 
-The container needs no certificate, no domain TLS, and no ports 80/443: the
-reverse proxy in front already terminates TLS, and the relay speaks plain HTTP on
-loopback. nginx must send `proxy_set_header Host $host`.
+镜像基于 Debian，因为固定版本的 MTProxy 源码需要 glibc 的 `drand48_r` 系列函数，
+musl 不提供。容器使用 bridge 网络，因此 MTProxy 从宿主机和公网都不可达。
+`.github/workflows/docker.yml` 先跑 Go 测试，再构建并推送 `linux/amd64` 到 GHCR。
 
-One command, no checkout, no host directories to prepare. The image contains a
-placeholder site at `/srv/site`, so it starts on its own:
+**容器不需要证书、不需要域名 TLS、不需要 80/443 端口。** 前置反代已经终止了 TLS，
+容器只在回环上讲明文 HTTP。
+
+### 一键运行
+
+不需要 checkout 仓库，也不需要准备任何宿主机目录。镜像内置了占位站点
+`/srv/site`，因此可以直接启动：
 
 ```bash
 docker run -d --name tproxy --restart unless-stopped \
@@ -113,41 +113,254 @@ docker run -d --name tproxy --restart unless-stopped \
   --security-opt no-new-privileges \
   -p 127.0.0.1:65501:65501 \
   -v tproxy-data:/data \
-  -e TPROXY_HOSTNAME=xxx.com \
+  -e TPROXY_HOSTNAME=origin.example.com \
   -e TPROXY_SECRET=000102030405060708090a0b0c0d0e0f \
   ghcr.io/luowei729/tproxy-server:latest
 ```
 
-The built-in page is a generic placeholder that every deployment of this image
-shares, so replace it before handing out links. Mount your own site over it, or
-point the relay at a loopback mirror:
+内置页面是所有使用该镜像的部署共用的通用占位页，正式分发链接前必须替换。两种替换方式：
 
 ```bash
-# A. mount a copy of the real website at the same in-container path
+# A. 把真实站点挂载到同一个容器路径
 -v /srv/www/site:/srv/site:ro
 
-# B. or proxy to a copy served on the host
+# B. 或者指向宿主机上监听回环端口的站点副本
 -e TPROXY_PUBLIC_UPSTREAM=http://172.17.0.1:3000
 ```
 
-Nothing in this command configures a domain, a certificate, ACME, a `server_name`,
-or ports 80/443. TLS ends at the reverse proxy in front and this container speaks
-plain HTTP on loopback. The one hostname value, `TPROXY_HOSTNAME`, is not a
-certificate name: the bridge capability is
-`HMAC(secret, "tdesktop-web-proxy-bridge-v2\n" + hostname + "\n" + path)`, so the
-relay must know the exact hostname clients type, and it also rejects relay traffic
-whose forwarded `Host` differs from it. Every other domain-related setting belongs
-to the front proxy.
+> 如果 `-v` 的宿主机目录不存在，Docker 会静默创建一个空目录，容器随后会以
+> `TPROXY_PUBLIC_DIR must contain a readable index.html` 反复重启。先建好目录和
+> `index.html`，或改用上面的 B 方式。
 
-`TPROXY_BASE_PATH` defaults to `proxy`; set it to any other prefix, or leave it
-empty for the host root. The relay listens on plain HTTP at
-`http://127.0.0.1:65501` and has no certificate: nginx keeps the 443 TLS
-certificate and proxies `http://` to that loopback port. Inside the container the
-listener is `0.0.0.0:65501` only because a Docker published port cannot reach a
-loopback-only listener; the published port is bound to host `127.0.0.1`, so the
-relay is unreachable from the network. See
-[`deploy/docker/README.md`](deploy/docker/README.md) for the nginx location block,
-NAT settings, and verification steps.
+### 域名必须三处一致
+
+`TPROXY_HOSTNAME` 不是证书名，它是协议输入，出现在两个地方：
+
+1. **派生 bridge capability**：
+   `HMAC(secret, "tdesktop-web-proxy-bridge-v2\n" + hostname + "\n" + path)`
+2. **校验转发的 `Host` 头**：与配置不符的认证流量直接返回 404
+
+因此下面三处的域名必须是同一个字符串（小写、不带端口、不带 `https://`）：
+
+| 位置 | 值 |
+|---|---|
+| 容器 `-e TPROXY_HOSTNAME=` | `origin.example.com` |
+| nginx `proxy_set_header Host` | `origin.example.com`（或 `$host`） |
+| Telegram 客户端"代理服务器"的域名部分 | `origin.example.com` |
+
+nginx 对 `proxy_pass` 的默认值是 `Host $proxy_host`，会发送 `127.0.0.1:65501`。
+那样 bridge 页面能打开，但所有 carrier 请求都会拿到公开 404。必须显式设置。
+
+`TPROXY_BASE_PATH` 默认是 `proxy`。改成别的前缀，或留空表示使用域名根路径。
+容器内监听 `0.0.0.0:65501` 只是因为 Docker 发布的端口无法连接到只绑回环的监听；
+发布端口绑定在宿主机 `127.0.0.1` 上，所以 relay 从网络侧不可达。
+
+### nginx 反代配置（源站）
+
+```nginx
+location ^~ /proxy/ {
+    proxy_pass http://127.0.0.1:65501;   # 明文 HTTP，不是 https
+    proxy_http_version 1.1;
+
+    proxy_set_header Host $host;                    # 必须是客户端输入的域名
+    proxy_set_header X-Forwarded-For $remote_addr;  # 单个地址，不能是列表
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    proxy_read_timeout 90s;      # relay 长轮询 25s
+    proxy_send_timeout 90s;
+    proxy_buffering off;         # 否则长轮询被攒住
+    proxy_request_buffering off;
+
+    client_max_body_size 4m;     # carrier 批次可达 2 MiB，默认 1m 会 413
+    access_log off;              # bridge URL 带 capability，不要写日志
+}
+```
+
+四个容易踩的坑：
+
+1. **`X-Forwarded-For` 必须用 `$remote_addr`。** relay 的 `clientIP` 明确拒绝逗号
+   列表（`strings.Contains(forwarded, ",")` 直接判错），而
+   `$proxy_add_x_forwarded_for` 正好产生列表，结果是所有 carrier 请求 404。
+2. **必须设 `client_max_body_size 4m`。** 上行批次可达 2 MiB。
+3. **必须设 `proxy_buffering off`。** 否则 25 秒的长轮询会被缓冲或提前截断。
+4. **只有 `websocket` 载体模式才需要 `Upgrade`/`Connection` 头。** 默认
+   `carrier_mode` 是 `https`，不需要。若要启用，`$connection_upgrade` 必须先
+   在 `http` 上下文用 `map` 定义，否则 `openresty -t` 报
+   `unknown "connection_upgrade" variable`：
+
+```nginx
+# 必须放在 http 上下文，不能放在 server 块里
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      "";
+}
+```
+
+面板（如 1Panel/OpenResty）只暴露站点的 `server` 块时，把这段 `map` 单独放到被
+`http` include 的文件里，例如 `conf.d/00-upgrade-map.conf`，然后 `openresty -t`
+加 `openresty -s reload`。
+
+改完配置务必确认重载真的生效，不要只看 `-t` 通过：
+
+```bash
+docker exec <openresty容器> openresty -T 2>/dev/null | grep -c 'location \^~ /proxy/'
+```
+
+返回 `0` 说明重载没落地，`/proxy/` 会变成站点自己的 404。
+
+### 别名域名（国内中转）
+
+这是最容易出错的一环。**bridge capability 绑定客户端输入的域名**，所以第二个域名
+不能简单反代到第一个：两者算出的 capability 完全不同，relay 会把别名当成未认证请求，
+返回公开站点。
+
+解决办法是告诉 relay 所有客户端可能使用的域名：
+
+```bash
+-e TPROXY_ALIAS_HOSTNAMES=edge.example.com      # 逗号分隔，最多 8 个
+```
+
+relay 随后会为每个域名各派生一个 capability、在 `Host` 校验中接受任意一个，
+并且**把请求实际使用的域名渲染进 bridge 页面**。最后这点很关键：从
+`edge.example.com` 加载的页面必须继续在 `edge.example.com` 上发 Fetch 和
+WebSocket，否则 WebView 就不再是同源了。
+
+中转机只反代这个前缀，TLS 在中转机上用别名的证书终止，回源时用源站自己的名字做 SNI：
+
+```nginx
+# 中转机（别名 edge.example.com）
+location ^~ / {
+    proxy_pass https://origin.example.com;   # 回源用源站域名
+    proxy_ssl_server_name on;
+    proxy_ssl_name origin.example.com;       # SNI，让源站选中正确的 vhost
+    proxy_http_version 1.1;
+
+    proxy_set_header Host $host;             # edge.example.com，源站按别名匹配
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    proxy_read_timeout 90s;
+    proxy_send_timeout 90s;
+    proxy_buffering off;
+    proxy_request_buffering off;
+
+    client_max_body_size 4m;
+    access_log off;
+}
+```
+
+`$host` 是客户端实际输入的域名，正是 relay 需要看到的。如果这里写死源站域名，
+bridge 页面会指向源站，后续所有 carrier 请求就绕过中转机了——链路看起来能连，
+但国内段的加速和中转全部失效。
+
+若中转机上 `443` 已被其他站点占用，用 `stream` + `ssl_preread` 按 SNI 分流，
+或在 `server_name` 上加一个独立 `server` 块，两种都可以；关键是**别改 `Host`**。
+
+关于能力值的一个语义：capability 是凭证，不是按域名授权的范围凭证。为源站域名
+生成的 capability 也能在别名下打开 bridge。两个域名指向同一台 relay，所以这不会
+多给出任何权限，测试中也记录了这个行为。
+
+### 验证
+
+先在服务器本地直连容器（绕过 nginx），确认 relay 本身正常：
+
+```bash
+# 公开站点
+curl -sI -H 'Host: origin.example.com' http://127.0.0.1:65501/ | head -n1
+
+# 前缀下的探测应返回站点自己的 404
+curl -sI -H 'Host: origin.example.com' http://127.0.0.1:65501/proxy/whatever | head -n1
+
+# 别名同样可用（需要已设置 TPROXY_ALIAS_HOSTNAMES）
+curl -sI -H 'Host: edge.example.com' http://127.0.0.1:65501/ | head -n1
+```
+
+再走公网 nginx：
+
+```bash
+curl -sI https://origin.example.com/ | head -n1
+curl -sI https://origin.example.com/proxy/whatever | head -n1   # 站点自己的 404
+curl -sI https://origin.example.com/api/v1/session | head -n1   # 也必须是站点响应
+```
+
+最后验证 bridge 与完整会话。capability 必须用**你实际使用的域名**计算：
+
+```bash
+python3 - <<'PY'
+import hmac, hashlib, base64
+host, path = "origin.example.com", "proxy"
+secret = bytes.fromhex("000102030405060708090a0b0c0d0e0f")
+b64 = lambda b: base64.urlsafe_b64encode(b).decode().rstrip("=")
+msg = f"tdesktop-web-proxy-bridge-v2\n{host}\n{path}".encode()
+print(f"https://{host}/{path}/?bridge={b64(hmac.new(secret, msg, hashlib.sha256).digest())}")
+PY
+```
+
+```bash
+# 应返回 200，且 relayBase 指向你请求用的那个域名
+curl -s 'https://origin.example.com/proxy/?bridge=<上面的值>' | grep -o 'relayBase="[^"]*"'
+```
+
+如果 bridge 能打开但客户端一直连不上，按这个顺序排查：
+
+| 现象 | 原因 |
+|---|---|
+| 返回公开站点首页 | 域名与 `TPROXY_HOSTNAME`/别名不一致，capability 对不上 |
+| bridge 打开但 carrier 全 404 | `Host` 没转发对，或 `X-Forwarded-For` 是列表 |
+| 长轮询立即返回或超时 | `proxy_buffering on` 或超时太短 |
+| 上行 413 | 缺 `client_max_body_size 4m` |
+| 连接建立但流量静止 | MTProxy 的 `--nat-info` 不对，见下文 |
+
+### MTProxy 与 NAT
+
+MTProxy 用自己出站的源地址派生与 Telegram middle-end 的 AES 密钥。Docker 会做地址
+转换，所以容器内总是需要 `--nat-info`。entrypoint 会自动探测容器地址和公网地址并
+传入 `--nat-info <local>:<public>`；在云厂商 1:1 NAT 后面请显式设置
+`MTPROXY_PUBLIC_IP`。地址对不上时的表现非常隐蔽：客户端能完成握手，relay 也正常
+分配流并回 `WINDOW`，然后所有流量静默卡死，任何一层都没有报错。检查：
+
+```bash
+docker logs tproxy 2>&1 | grep -c 'Disconnected from RPC Middle-End'
+```
+
+持续增长就说明地址对错了。
+
+### 客户端填写
+
+```
+Web 代理服务器: origin.example.com/proxy
+密钥:           000102030405060708090a0b0c0d0e0f
+```
+
+**密钥填原始 hex，不要填 `cAABAgMEBQYHCAkKCwwNDg8`。** 后者是
+`0x70 || secret` 的 base64url 形式，只用于 `t.me/webproxy` 分享链接，用来让不支持
+路径的旧客户端拒绝链接而不是连到空主机。部分客户端手动输入这种形式会报"密钥错误"。
+
+生成这两套值：
+
+```bash
+cd deploy/docker
+printf 'TPROXY_HOSTNAME=origin.example.com\nTPROXY_BASE_PATH=proxy\nTPROXY_SECRET=<你的hex>\n' > .env
+./client-link.sh
+```
+
+脚本会分别输出 `Proxy secret (typed)`（手动输入用）和 `Link secret (marked)`（链接用）。
+
+`000102030405060708090a0b0c0d0e0f` 是仓库公开的测试向量，测通后务必换成自己的：
+
+```bash
+openssl rand -hex 16
+```
+
+更换后需要重建容器，所有已分发的客户端链接都会失效。
+
+---
+
+> 以下章节描述的是 **systemd 安装方式**（`deploy/install.sh`），与上面的 Docker 部署
+> 互斥，二选一即可。这些章节保留英文原文，因为其中的命令、路径和输出需要与脚本
+> 一一对应。Docker 部署所需的 nginx 配置与别名域名说明已在上文完整给出。
 
 ## What you need
 
