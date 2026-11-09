@@ -103,7 +103,8 @@ The container needs no certificate, no domain TLS, and no ports 80/443: the
 reverse proxy in front already terminates TLS, and the relay speaks plain HTTP on
 loopback. nginx must send `proxy_set_header Host $host`.
 
-One command, no checkout:
+One command, no checkout, no host directories to prepare. The image contains a
+placeholder site at `/srv/site`, so it starts on its own:
 
 ```bash
 docker run -d --name tproxy --restart unless-stopped \
@@ -112,11 +113,21 @@ docker run -d --name tproxy --restart unless-stopped \
   --security-opt no-new-privileges \
   -p 127.0.0.1:65501:65501 \
   -v tproxy-data:/data \
-  -v /srv/www/site:/srv/site:ro \
   -e TPROXY_HOSTNAME=xxx.com \
   -e TPROXY_SECRET=000102030405060708090a0b0c0d0e0f \
-  -e TPROXY_PUBLIC_DIR=/srv/site \
   ghcr.io/luowei729/tproxy-server:latest
+```
+
+The built-in page is a generic placeholder that every deployment of this image
+shares, so replace it before handing out links. Mount your own site over it, or
+point the relay at a loopback mirror:
+
+```bash
+# A. mount a copy of the real website at the same in-container path
+-v /srv/www/site:/srv/site:ro
+
+# B. or proxy to a copy served on the host
+-e TPROXY_PUBLIC_UPSTREAM=http://172.17.0.1:3000
 ```
 
 Nothing in this command configures a domain, a certificate, ACME, a `server_name`,

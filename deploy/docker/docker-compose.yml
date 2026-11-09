@@ -19,7 +19,9 @@ services:
       - "127.0.0.1:${TPROXY_HOST_PORT:-65501}:65501"
     volumes:
       - tproxy-data:/data
-      - ${TPROXY_SITE_DIR:-./site}:/srv/site:ro
+      # The image already contains a placeholder site at /srv/site, so no mount
+      # is required. Uncomment to serve your real website instead:
+      # - /srv/www/site:/srv/site:ro
     read_only: true
     tmpfs:
       - /run

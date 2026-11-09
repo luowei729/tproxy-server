@@ -58,14 +58,49 @@ esac
 [ "$MTPROXY_MAX_CONNECTIONS" -ge 1 ] || die "MTPROXY_MAX_CONNECTIONS must be a positive integer"
 
 # The operator website. Unauthenticated requests under the prefix must receive
-# the same responses as the real site, so point this at a loopback or container
-# reachable mirror of that site.
+# the same responses as the real site, so this is either a copy of that site or
+# a loopback/container-reachable mirror of it. The image ships a placeholder at
+# /srv/site so the container starts with no host mount at all.
+if [ -z "${TPROXY_PUBLIC_DIR:-}" ] && [ -z "${TPROXY_PUBLIC_UPSTREAM:-}" ]; then
+	TPROXY_PUBLIC_DIR=/srv/site
+fi
+site_hint() {
+	cat >&2 <<EOF
+The image ships a placeholder site at /srv/site, so this error means an explicit
+setting pointed somewhere else. Fix one of these, then restart the container:
+
+  A. Use the built-in placeholder (no flags needed):
+       unset TPROXY_PUBLIC_DIR TPROXY_PUBLIC_UPSTREAM
+
+  B. Serve your real website instead. Either mount a copy:
+       docker run ... -v /srv/www/site:/srv/site:ro -e TPROXY_PUBLIC_DIR=/srv/site
+
+     ...or point at a loopback-reachable mirror of it:
+       docker run ... -e TPROXY_PUBLIC_UPSTREAM=http://172.17.0.1:3000
+
+Docker creates a bind-mount source directory that does not exist as an empty
+directory, so a mistyped host path looks exactly like this. Check the host:
+       ls -la $(printf '%s' "${TPROXY_PUBLIC_DIR:-<host path>}")
+EOF
+}
+
 if [ -n "${TPROXY_PUBLIC_DIR:-}" ]; then
 	case "$TPROXY_PUBLIC_DIR" in
 		*\"*|*\\*) die "TPROXY_PUBLIC_DIR must not contain quotes or backslashes" ;;
 	esac
-	[ -d "$TPROXY_PUBLIC_DIR" ] || die "TPROXY_PUBLIC_DIR is not a directory: $TPROXY_PUBLIC_DIR"
-	[ -r "$TPROXY_PUBLIC_DIR/index.html" ] || die "TPROXY_PUBLIC_DIR must contain a readable index.html"
+	if [ ! -d "$TPROXY_PUBLIC_DIR" ]; then
+		log "error: TPROXY_PUBLIC_DIR is not a directory: $TPROXY_PUBLIC_DIR"
+		site_hint
+		exit 1
+	fi
+	if [ ! -r "$TPROXY_PUBLIC_DIR/index.html" ]; then
+		log "error: TPROXY_PUBLIC_DIR must contain a readable index.html: $TPROXY_PUBLIC_DIR"
+		if [ -z "$(ls -A "$TPROXY_PUBLIC_DIR" 2>/dev/null)" ]; then
+			log "error: $TPROXY_PUBLIC_DIR is empty, so the host bind-mount source was probably missing"
+		fi
+		site_hint
+		exit 1
+	fi
 	public_source="\"public_dir\": \"$TPROXY_PUBLIC_DIR\","
 elif [ -n "${TPROXY_PUBLIC_UPSTREAM:-}" ]; then
 	case "$TPROXY_PUBLIC_UPSTREAM" in
@@ -73,7 +108,9 @@ elif [ -n "${TPROXY_PUBLIC_UPSTREAM:-}" ]; then
 	esac
 	public_source="\"public_upstream\": \"$TPROXY_PUBLIC_UPSTREAM\","
 else
-	die "set TPROXY_PUBLIC_DIR or TPROXY_PUBLIC_UPSTREAM to the operator website"
+	log "error: neither public_dir nor public_upstream resolved"
+	site_hint
+	exit 1
 fi
 
 state="$TPROXY_STATE_DIR"

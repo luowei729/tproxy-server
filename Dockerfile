@@ -49,13 +49,18 @@ RUN apt-get update \
  && install -d -o root -g root -m 0755 /data
 COPY --from=mtproxy /usr/local/bin/mtproto-proxy /usr/local/bin/mtproto-proxy
 COPY --from=relay /out/tproxy-server /usr/local/bin/tproxy-server
+# A placeholder public site so the container starts without a host mount. It is
+# the response an unauthenticated prober sees, so replace it with the operator's
+# real site (TPROXY_PUBLIC_DIR or TPROXY_PUBLIC_UPSTREAM) before going live.
+COPY deploy/docker/site /srv/site
 COPY deploy/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY deploy/docker/tproxy-run.sh /usr/local/bin/tproxy-run
 RUN chmod 0755 \
       /usr/local/bin/entrypoint.sh \
       /usr/local/bin/tproxy-run \
       /usr/local/bin/mtproto-proxy \
-      /usr/local/bin/tproxy-server
+      /usr/local/bin/tproxy-server \
+ && chmod -R a+rX /srv/site
 EXPOSE 65501
 VOLUME ["/data"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \

@@ -6,8 +6,8 @@
 /*.test
 /*.prof
 .DS_Store
-# Docker deployment secrets and local site mirror.
+# Docker deployment secrets. The built-in placeholder site at
+# deploy/docker/site is committed on purpose: it is baked into the image.
 deploy/docker/.env
-deploy/docker/site/
 # Local editor/MCP configuration.
 .qoder-cn/

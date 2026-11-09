@@ -98,8 +98,25 @@ func (s *staticSite) resolve(requestPath string, legacyRoutes bool) *staticEntry
 	return nil
 }
 
+// builtinContentTypes covers the handful of web file types that Go's mime
+// package does not know without a system /etc/mime.types. A slim container
+// image has no such file, and serving robots.txt as octet-stream is a small but
+// visible difference from any ordinary static server.
+var builtinContentTypes = map[string]string{
+	".txt":   "text/plain; charset=utf-8",
+	".text":  "text/plain; charset=utf-8",
+	".map":   "application/json",
+	".webm":  "video/webm",
+	".woff2": "font/woff2",
+	".woff":  "font/woff",
+}
+
 func contentTypeFor(relative string) string {
-	if value := mime.TypeByExtension(filepath.Ext(relative)); value != "" {
+	extension := strings.ToLower(filepath.Ext(relative))
+	if value := mime.TypeByExtension(extension); value != "" {
+		return value
+	}
+	if value := builtinContentTypes[extension]; value != "" {
 		return value
 	}
 	return "application/octet-stream"

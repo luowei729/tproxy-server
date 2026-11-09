@@ -57,7 +57,8 @@ public 404 and the bridge page would load but never connect. Set it explicitly.
 
 ## One command
 
-No checkout, no compose file — pull the published image and run it:
+No checkout, no compose file, no host directories to create. The image ships a
+placeholder site at `/srv/site`, so the container starts by itself:
 
 ```bash
 docker run -d --name tproxy --restart unless-stopped \
@@ -66,19 +67,59 @@ docker run -d --name tproxy --restart unless-stopped \
   --security-opt no-new-privileges \
   -p 127.0.0.1:65501:65501 \
   -v tproxy-data:/data \
-  -v /srv/www/site:/srv/site:ro \
   -e TPROXY_HOSTNAME=xxx.com \
   -e TPROXY_SECRET=000102030405060708090a0b0c0d0e0f \
-  -e TPROXY_PUBLIC_DIR=/srv/site \
   ghcr.io/luowei729/tproxy-server:latest
 ```
+
+That placeholder is the response an unauthenticated prober receives for any path
+under the prefix. It is generic and shared by every deployment of this image, so
+replace it before distributing links — a repeated body is itself a fingerprint.
 
 There is no domain, certificate, ACME, `server_name`, or 80/443 setup here: TLS
 ends at the reverse proxy in front and this container speaks plain HTTP on
 loopback. `TPROXY_HOSTNAME` is a protocol input, not a certificate name — it is
 the `hostname` in the capability derivation and the value the relay compares
 against the forwarded `Host` — so it must equal the hostname clients type. It is
-the only hostname-shaped setting in the command; the mount path is arbitrary.
+the only hostname-shaped setting in the command.
+
+### Replace the placeholder with the real site
+
+Either mount a copy over the built-in path:
+
+```bash
+sudo mkdir -p /srv/www/site
+sudo cp -a /var/www/xxx.com/. /srv/www/site/     # include 404.html if you have one
+docker run -d --name tproxy --restart unless-stopped \
+  ... -v /srv/www/site:/srv/site:ro ...
+```
+
+or serve the site once more on a loopback port and give the relay that address.
+This keeps a single copy of the site and matches its behaviour exactly:
+
+```nginx
+server {
+    listen 127.0.0.1:3000;
+    server_name _;
+    root /var/www/xxx.com;
+    index index.html;
+    error_page 404 /404.html;
+}
+```
+
+```bash
+# 172.17.0.1 is the Docker bridge gateway, i.e. the host, from inside a container.
+# Confirm with: ip -4 addr show docker0
+docker run -d --name tproxy --restart unless-stopped \
+  ... -e TPROXY_PUBLIC_UPSTREAM=http://172.17.0.1:3000 ...
+```
+
+`TPROXY_PUBLIC_UPSTREAM` accepts only `http://`, a numeric address, and a port.
+It is not a public URL: the relay reaches it over the container network.
+
+> If you mount a host directory that does not exist, Docker creates it empty
+> instead of failing, and the container restart-loops with
+> `TPROXY_PUBLIC_DIR must contain a readable index.html`. Create it first.
 
 Then proxy one prefix to it from the existing nginx:
 
@@ -108,11 +149,9 @@ docker run -d --name tproxy --restart unless-stopped \
   --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID \
   --security-opt no-new-privileges \
   -p 127.0.0.1:65501:65501 -v tproxy-data:/data \
-  -v /srv/www/site:/srv/site:ro \
   -e TPROXY_HOSTNAME=xxx.com \
   -e TPROXY_BASE_PATH=my-secret-path \
   -e TPROXY_SECRET=000102030405060708090a0b0c0d0e0f \
-  -e TPROXY_PUBLIC_DIR=/srv/site \
   ghcr.io/luowei729/tproxy-server:latest
 ```
 
@@ -130,8 +169,8 @@ docker pull ghcr.io/luowei729/tproxy-server:latest && docker restart tproxy
 ```bash
 cd deploy/docker
 cp .env.example .env
-# Edit .env: TPROXY_HOSTNAME, TPROXY_SECRET, and a site mirror directory.
-mkdir -p site && cp -a /path/to/your-site/. site/   # must contain index.html
+# Edit .env: TPROXY_HOSTNAME and TPROXY_SECRET. The site is optional: the image
+# contains a placeholder, and TPROXY_PUBLIC_DIR/TPROXY_PUBLIC_UPSTREAM override it.
 chmod 0755 client-link.sh
 docker compose up -d --build
 ```
@@ -232,11 +271,12 @@ host the only address is `http://127.0.0.1:65501`, and nothing on the network ca
 reach it directly. `container_network: true` in the generated config exists only
 to permit that non-loopback container listener and peer.
 
-Keep the decoy consistent: `TPROXY_SITE_DIR` should mirror the same site, so a
-probe of `/proxy/whatever` receives the website's own 404 rather than a
+Keep the decoy consistent: the relay answers unauthenticated requests under the
+prefix from the built-in placeholder unless you mount or proxy the real site, so
+a probe of `/proxy/whatever` should receive the website's own 404 rather than a
 distinguishable relay error. If the site runs as an application on the host, set
 `TPROXY_PUBLIC_UPSTREAM` to a container-reachable address (for example
-`http://172.17.0.1:3000`) and remove `TPROXY_PUBLIC_DIR` and the site mount.
+`http://172.17.0.1:3000`) instead of mounting files.
 
 The relay requires exactly one `X-Forwarded-For` value; `$proxy_add_x_forwarded_for`
 can produce a list and is rejected.
