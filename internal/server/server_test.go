@@ -257,6 +257,43 @@ func TestSessionAuthenticationDoesNotDependOnOrigin(t *testing.T) {
 	}
 }
 
+func TestClientIPAcceptsContainerPeersOnlyWhenEnabled(t *testing.T) {
+	backend := startEchoBackend(t)
+	application, _ := newConfiguredTestServer(t, backend, func(value *config.Config) {
+		value.ContainerNetwork = true
+	})
+	defer application.Shutdown()
+
+	forwarded := request(t, http.MethodPost, "http://"+testHost+"/api/v1/down", nil, "")
+	forwarded.RemoteAddr = "172.17.0.1:41234"
+	forwarded.Header.Set("X-Forwarded-For", "198.51.100.7")
+	got, err := application.clientIP(forwarded)
+	if err != nil || got != "198.51.100.7" {
+		t.Fatalf("container peer was not accepted: %q %v", got, err)
+	}
+
+	direct := request(t, http.MethodPost, "http://"+testHost+"/api/v1/down", nil, "")
+	direct.RemoteAddr = "172.17.0.1:41234"
+	direct.Header.Del("X-Forwarded-For")
+	got, err = application.clientIP(direct)
+	if err != nil || got != "172.17.0.1" {
+		t.Fatalf("container peer without forwarding was not accepted: %q %v", got, err)
+	}
+
+	malformed := request(t, http.MethodPost, "http://"+testHost+"/api/v1/down", nil, "")
+	malformed.RemoteAddr = "172.17.0.1:41234"
+	malformed.Header.Set("X-Forwarded-For", "198.51.100.7, 198.51.100.8")
+	if _, err := application.clientIP(malformed); err == nil {
+		t.Fatal("container peer accepted a forwarding list")
+	}
+
+	strict, _ := newConfiguredTestServer(t, backend, nil)
+	defer strict.Shutdown()
+	if _, err := strict.clientIP(forwarded); err == nil {
+		t.Fatal("non-loopback peer was accepted without container mode")
+	}
+}
+
 func TestUplinkBackpressureIsRetryable(t *testing.T) {
 	backend := startEchoBackend(t)
 	application, _ := newConfiguredTestServer(t, backend, func(value *config.Config) {

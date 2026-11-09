@@ -1,0 +1,44 @@
+services:
+  tproxy:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: ${TPROXY_IMAGE:-tproxy-server:local}
+    # Pull the published image instead of building locally. Set TPROXY_IMAGE to
+    # ghcr.io/<owner>/<repo>:latest (or a tag) and run `docker compose pull`.
+    pull_policy: ${TPROXY_PULL_POLICY:-missing}
+    container_name: ${TPROXY_CONTAINER_NAME:-tproxy}
+    restart: unless-stopped
+    env_file:
+      - .env
+    # The container listens on 0.0.0.0:65501 because a published port cannot
+    # reach a loopback-only listener. Publishing on 127.0.0.1 keeps the relay
+    # unreachable from the network; only the host nginx can proxy /proxy/ here.
+    ports:
+      - "127.0.0.1:${TPROXY_HOST_PORT:-65501}:65501"
+    volumes:
+      - tproxy-data:/data
+      - ${TPROXY_SITE_DIR:-./site}:/srv/site:ro
+    read_only: true
+    tmpfs:
+      - /run
+      - /tmp
+    # The entrypoint runs as root only to provision /data and then drops to the
+    # tproxy user with setpriv, which needs these three capabilities.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:65502/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  tproxy-data:

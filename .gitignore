@@ -6,3 +6,8 @@
 /*.test
 /*.prof
 .DS_Store
+# Docker deployment secrets and local site mirror.
+deploy/docker/.env
+deploy/docker/site/
+# Local editor/MCP configuration.
+.qoder-cn/

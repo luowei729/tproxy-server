@@ -104,6 +104,43 @@ func TestPublicSourceValidation(t *testing.T) {
 	}
 }
 
+func TestContainerNetworkListenerPolicy(t *testing.T) {
+	for _, address := range []string{
+		"127.0.0.1:65501",
+		"0.0.0.0:65501",
+		"172.17.0.2:65501",
+		"[::]:65501",
+	} {
+		if err := validateListenAddress(address, true); err != nil {
+			t.Fatalf("container listener %q was rejected: %v", address, err)
+		}
+	}
+	for _, address := range []string{
+		"0.0.0.0:65501",
+		"172.17.0.2:65501",
+		"localhost:65501",
+		"[::]:65501",
+	} {
+		if err := validateListenAddress(address, false); err == nil {
+			t.Fatalf("non-loopback listener %q was accepted outside container mode", address)
+		}
+	}
+	for _, address := range []string{"0.0.0.0:0", "0.0.0.0:70000", "host:65501"} {
+		if err := validateListenAddress(address, true); err == nil {
+			t.Fatalf("invalid container listener %q was accepted", address)
+		}
+	}
+	if err := validatePublicUpstream("http://172.17.0.1:3000", true); err != nil {
+		t.Fatalf("container public upstream was rejected: %v", err)
+	}
+	if err := validatePublicUpstream("http://172.17.0.1:3000", false); err == nil {
+		t.Fatal("non-loopback public upstream was accepted outside container mode")
+	}
+	if err := validatePublicUpstream("http://host.docker.internal:3000", true); err == nil {
+		t.Fatal("container public upstream accepted a non-numeric host")
+	}
+}
+
 func TestPlainSecretMayBeginWithEE(t *testing.T) {
 	secret, err := DecodeSecret("ee0102030405060708090a0b0c0d0e0f")
 	if err != nil || len(secret) != 16 || secret[0] != 0xee {

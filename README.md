@@ -77,6 +77,48 @@ relay path for an unauthenticated prober to compare with the public site, and on
 `GET /?bridge=<valid capability>` reveals the bridge. Restart the relay after
 changing files under `public_dir`; the static site is read once at start-up.
 
+## Docker deployment
+
+[`deploy/docker/`](deploy/docker/README.md) packages the relay and the official
+MTProxy in one image for a host that already runs an HTTPS website on port 443.
+The container publishes only `127.0.0.1:65501`, and the existing server proxies
+one path prefix — `proxy` by default, configurable — to it:
+
+```text
+Telegram app (hostname = xxx.com, port 443)
+      -> existing nginx :443
+      -> location ^~ /proxy/  -> 127.0.0.1:65501 -> tproxy container
+                                                    -> 127.0.0.1:2398 MTProxy
+```
+
+`/proxy/` is the relay base path, so the bridge lives at
+`https://xxx.com/proxy/?bridge=<capability>`. No client setting changes: the
+hostname stays `xxx.com`, and the path is part of the configured proxy address.
+The image is Debian-based because the pinned MTProxy source needs glibc, and it
+uses a bridge network so MTProxy is never reachable from the host or the
+internet. `.github/workflows/docker.yml` runs the Go tests, then builds and
+pushes `linux/amd64` to GHCR; the server pulls it with `docker compose pull`.
+
+One command, no checkout:
+
+```bash
+docker run -d --name tproxy --restart unless-stopped \
+  --read-only --tmpfs /run --tmpfs /tmp \
+  --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID \
+  --security-opt no-new-privileges \
+  -p 127.0.0.1:65501:65501 \
+  -v tproxy-data:/data \
+  -v /srv/www/xxx.com:/srv/site:ro \
+  -e TPROXY_HOSTNAME=xxx.com \
+  -e TPROXY_SECRET=000102030405060708090a0b0c0d0e0f \
+  -e TPROXY_PUBLIC_DIR=/srv/site \
+  ghcr.io/luowei729/tproxy-server:latest
+```
+
+`TPROXY_BASE_PATH` defaults to `proxy`; set it to any other prefix, or leave it
+empty for the host root. See [`deploy/docker/README.md`](deploy/docker/README.md)
+for the nginx location block, NAT settings, and verification steps.
+
 ## What you need
 
 - a dedicated lowercase hostname such as `proxy.example.com` that you control;

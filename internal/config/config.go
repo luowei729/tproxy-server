@@ -111,10 +111,16 @@ type Timeouts struct {
 }
 
 type Config struct {
-	PublicHostname   string    `json:"public_hostname"`
-	BasePath         string    `json:"base_path"`
-	Listen           string    `json:"listen"`
-	AdminListen      string    `json:"admin_listen"`
+	PublicHostname string `json:"public_hostname"`
+	BasePath       string `json:"base_path"`
+	Listen         string `json:"listen"`
+	AdminListen    string `json:"admin_listen"`
+	// ContainerNetwork allows non-loopback listeners and peers for a container
+	// deployment. The container publishes exactly one port on the host
+	// loopback, so the in-container listener cannot bind 127.0.0.1 and the
+	// relay sees the container gateway rather than a loopback peer. The
+	// published port, not these checks, is the trust boundary there.
+	ContainerNetwork bool      `json:"container_network"`
 	PublicDir        string    `json:"public_dir"`
 	PublicUpstream   string    `json:"public_upstream"`
 	StaticRoutes     string    `json:"static_routes"`
@@ -291,10 +297,10 @@ func (c Config) validate() error {
 	if err := ValidateBasePath(c.BasePath); err != nil {
 		return fmt.Errorf("base_path: %w", err)
 	}
-	if err := validateLoopbackAddress(c.Listen); err != nil {
+	if err := validateListenAddress(c.Listen, c.ContainerNetwork); err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
-	if err := validateLoopbackAddress(c.AdminListen); err != nil {
+	if err := validateListenAddress(c.AdminListen, c.ContainerNetwork); err != nil {
 		return fmt.Errorf("admin_listen: %w", err)
 	}
 	if c.Listen == c.AdminListen {
@@ -311,7 +317,7 @@ func (c Config) validate() error {
 		if _, err := os.Stat(filepath.Join(c.PublicDir, "index.html")); err != nil {
 			return errors.New("public_dir must contain index.html")
 		}
-	} else if err := validatePublicUpstream(c.PublicUpstream); err != nil {
+	} else if err := validatePublicUpstream(c.PublicUpstream, c.ContainerNetwork); err != nil {
 		return fmt.Errorf("public_upstream: %w", err)
 	}
 	if c.ProfilesFile == "" {
@@ -482,13 +488,43 @@ func DecodeSecret(value string) ([]byte, error) {
 }
 
 func validateLoopbackAddress(address string) error {
-	host, port, err := net.SplitHostPort(address)
+	host, _, err := net.SplitHostPort(address)
 	if err != nil {
 		return err
 	}
 	ip := net.ParseIP(host)
 	if ip == nil || !ip.IsLoopback() {
 		return errors.New("must use a numeric loopback address")
+	}
+	return validatePort(address)
+}
+
+// validateListenAddress keeps listeners on loopback unless the operator
+// explicitly enables container networking. A container publishes exactly one
+// port on the host loopback, so the in-container listener must bind a
+// non-loopback address; the published port remains the trust boundary.
+func validateListenAddress(address string, containerNetwork bool) error {
+	if !containerNetwork {
+		return validateLoopbackAddress(address)
+	}
+	return validateNumericAddress(address)
+}
+
+func validateNumericAddress(address string) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return err
+	}
+	if net.ParseIP(host) == nil {
+		return errors.New("must use a numeric IP address")
+	}
+	return validatePort(address)
+}
+
+func validatePort(address string) error {
+	_, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return err
 	}
 	value, err := strconv.Atoi(port)
 	if err != nil || value < 1 || value > 65535 {
@@ -497,7 +533,7 @@ func validateLoopbackAddress(address string) error {
 	return nil
 }
 
-func validatePublicUpstream(raw string) error {
+func validatePublicUpstream(raw string, containerNetwork bool) error {
 	parsed, err := url.Parse(raw)
 	if err != nil {
 		return err
@@ -508,10 +544,10 @@ func validatePublicUpstream(raw string) error {
 	if parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return errors.New("must contain only scheme, loopback address, and port")
 	}
-	if err := validateLoopbackAddress(parsed.Host); err != nil {
-		return err
+	if containerNetwork {
+		return validateNumericAddress(parsed.Host)
 	}
-	return nil
+	return validateLoopbackAddress(parsed.Host)
 }
 
 func loadProfiles(path, host, basePath string, limits Limits) ([]Profile, error) {

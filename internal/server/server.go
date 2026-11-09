@@ -619,7 +619,13 @@ func (s *Server) clientIP(r *http.Request) (string, error) {
 		return "", err
 	}
 	peer := net.ParseIP(host)
-	if peer == nil || !peer.IsLoopback() {
+	if peer == nil {
+		return "", errors.New("invalid peer address")
+	}
+	// A container deployment publishes exactly one port on the host loopback,
+	// so the relay sees the container gateway instead of a loopback peer. The
+	// published port, not this check, is the trust boundary there.
+	if !peer.IsLoopback() && !s.config.ContainerNetwork {
 		return "", errors.New("request did not arrive through loopback proxy")
 	}
 	forwarded := r.Header.Get("X-Forwarded-For")
