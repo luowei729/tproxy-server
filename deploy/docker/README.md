@@ -66,12 +66,19 @@ docker run -d --name tproxy --restart unless-stopped \
   --security-opt no-new-privileges \
   -p 127.0.0.1:65501:65501 \
   -v tproxy-data:/data \
-  -v /srv/www/xxx.com:/srv/site:ro \
+  -v /srv/www/site:/srv/site:ro \
   -e TPROXY_HOSTNAME=xxx.com \
   -e TPROXY_SECRET=000102030405060708090a0b0c0d0e0f \
   -e TPROXY_PUBLIC_DIR=/srv/site \
   ghcr.io/luowei729/tproxy-server:latest
 ```
+
+There is no domain, certificate, ACME, `server_name`, or 80/443 setup here: TLS
+ends at the reverse proxy in front and this container speaks plain HTTP on
+loopback. `TPROXY_HOSTNAME` is a protocol input, not a certificate name — it is
+the `hostname` in the capability derivation and the value the relay compares
+against the forwarded `Host` — so it must equal the hostname clients type. It is
+the only hostname-shaped setting in the command; the mount path is arbitrary.
 
 Then proxy one prefix to it from the existing nginx:
 
@@ -101,7 +108,7 @@ docker run -d --name tproxy --restart unless-stopped \
   --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID \
   --security-opt no-new-privileges \
   -p 127.0.0.1:65501:65501 -v tproxy-data:/data \
-  -v /srv/www/xxx.com:/srv/site:ro \
+  -v /srv/www/site:/srv/site:ro \
   -e TPROXY_HOSTNAME=xxx.com \
   -e TPROXY_BASE_PATH=my-secret-path \
   -e TPROXY_SECRET=000102030405060708090a0b0c0d0e0f \

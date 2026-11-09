@@ -101,9 +101,7 @@ pushes `linux/amd64` to GHCR; the server pulls it with `docker compose pull`.
 
 The container needs no certificate, no domain TLS, and no ports 80/443: the
 reverse proxy in front already terminates TLS, and the relay speaks plain HTTP on
-loopback. `TPROXY_HOSTNAME` is used only to derive the bridge capability and to
-check the forwarded `Host` header, so nginx must send
-`proxy_set_header Host $host`.
+loopback. nginx must send `proxy_set_header Host $host`.
 
 One command, no checkout:
 
@@ -114,12 +112,21 @@ docker run -d --name tproxy --restart unless-stopped \
   --security-opt no-new-privileges \
   -p 127.0.0.1:65501:65501 \
   -v tproxy-data:/data \
-  -v /srv/www/xxx.com:/srv/site:ro \
+  -v /srv/www/site:/srv/site:ro \
   -e TPROXY_HOSTNAME=xxx.com \
   -e TPROXY_SECRET=000102030405060708090a0b0c0d0e0f \
   -e TPROXY_PUBLIC_DIR=/srv/site \
   ghcr.io/luowei729/tproxy-server:latest
 ```
+
+Nothing in this command configures a domain, a certificate, ACME, a `server_name`,
+or ports 80/443. TLS ends at the reverse proxy in front and this container speaks
+plain HTTP on loopback. The one hostname value, `TPROXY_HOSTNAME`, is not a
+certificate name: the bridge capability is
+`HMAC(secret, "tdesktop-web-proxy-bridge-v2\n" + hostname + "\n" + path)`, so the
+relay must know the exact hostname clients type, and it also rejects relay traffic
+whose forwarded `Host` differs from it. Every other domain-related setting belongs
+to the front proxy.
 
 `TPROXY_BASE_PATH` defaults to `proxy`; set it to any other prefix, or leave it
 empty for the host root. The relay listens on plain HTTP at
