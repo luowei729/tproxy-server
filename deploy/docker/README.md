@@ -183,37 +183,39 @@ re-downloads the MTProxy files.
 systemd installer: `/`-separated segments matching `[A-Za-z0-9][A-Za-z0-9_-]*`,
 at most 128 characters. An empty value serves the relay at the host root.
 
-## Build in CI, pull on the server
+## Build locally, then run
 
-`.github/workflows/docker.yml` runs `go vet` and `go test`, then builds
-`linux/amd64` and pushes to GHCR on every push to the default branch, on `v*`
-tags, and on manual dispatch. Tags are `latest` (default branch), the branch
-name, semver, and `sha-<short>`.
-
-The workflow needs no extra secret: it authenticates with `GITHUB_TOKEN` and
-`packages: write`. Make the package public once, or authenticate the server:
-
-```bash
-echo "$GHCR_TOKEN" | docker login ghcr.io -u <github-user> --password-stdin
-```
-
-On the server, pull instead of building:
+There is no CI workflow in this repository, so build the image on the machine
+that runs it (or on any x86_64 builder) and transfer it:
 
 ```bash
 cd deploy/docker
-cp .env.example .env
-# TPROXY_IMAGE=ghcr.io/<owner>/<repo>:latest
+docker compose build
+docker compose up -d
+```
+
+Or build the image directly from the repository root:
+
+```bash
+docker build -t tproxy-server:local .
+```
+
+`docker compose up -d` without `--build` starts whatever image tag `.env` names,
+so `TPROXY_IMAGE` can also point at an image you pushed to a registry yourself:
+
+```bash
+# TPROXY_IMAGE=registry.example.com/tproxy-server:latest
+docker login registry.example.com
 docker compose pull
 docker compose up -d
 ```
 
-`docker compose up -d` without `--build` starts the pulled image. To pin a
-release, use a `sha-<short>` or semver tag instead of `latest` and update it
-deliberately. Rolling back is changing that tag and running
-`docker compose pull && docker compose up -d`; the `tproxy-data` volume keeps
-the token key so sessions issued before the rollback stay recognizable.
+Pin a release by tag rather than using `latest` and update it deliberately.
+Rolling back is changing that tag and running `docker compose pull &&
+docker compose up -d`; the `tproxy-data` volume keeps the token key so sessions
+issued before the rollback stay recognizable.
 
-Only `linux/amd64` is published. The pinned MTProxy source builds with
+Only `linux/amd64` is supported. The pinned MTProxy source builds with
 `-march=core2` and needs glibc, so an arm64 image would need a different MTProxy
 build, not just another platform entry.
 

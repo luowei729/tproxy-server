@@ -96,7 +96,12 @@ Telegram 客户端（域名 = origin.example.com，端口固定 443）
 
 镜像基于 Debian，因为固定版本的 MTProxy 源码需要 glibc 的 `drand48_r` 系列函数，
 musl 不提供。容器使用 bridge 网络，因此 MTProxy 从宿主机和公网都不可达。
-`.github/workflows/docker.yml` 先跑 Go 测试，再构建并推送 `linux/amd64` 到 GHCR。
+
+仓库不含 CI 工作流。镜像在你自己的机器上构建，或构建后推到你自己的镜像仓库：
+
+```bash
+cd deploy/docker && docker compose build && docker compose up -d
+```
 
 **容器不需要证书、不需要域名 TLS、不需要 80/443 端口。** 前置反代已经终止了 TLS，
 容器只在回环上讲明文 HTTP。
