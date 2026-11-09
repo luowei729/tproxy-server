@@ -40,7 +40,7 @@ stop_children() {
 	wait "$relaypid" 2>/dev/null || true
 	wait "$mtpid" 2>/dev/null || true
 }
-trap stop_children TERM INT
+trap 'stop_children; exit 0' TERM INT
 
 while :; do
 	if ! kill -0 "$mtpid" 2>/dev/null; then

@@ -122,12 +122,32 @@ chmod 0755 /run/tproxy
 
 # Persistent 32-byte token signing key. Replacing it loses token provenance for
 # sessions issued by an earlier run; the key is never derived from the secret.
-# The file is owned by tproxy with no group/other bits, which the relay requires.
-# This script never reads it back: it runs as root without DAC_OVERRIDE and the
-# relay validates the key itself under the tproxy identity.
-if [ ! -e "$state/token.key" ]; then
-	head -c 32 /dev/urandom >"$state/token.key"
-fi
+# The file must be owned by tproxy with mode 0400, which the relay enforces.
+#
+# Only a newly created key is chmod/chowned. An existing one is verified, never
+# repaired: this script runs as root but without DAC_OVERRIDE, so once the key
+# belongs to tproxy, root can neither chmod it nor read it back. Metadata alone
+# is enough to check, and stat needs no read access to the file.
+ensure_token_key() {
+	path="$1"
+	if [ ! -e "$path" ]; then
+		head -c 32 /dev/urandom >"$path"
+		chmod 0400 "$path"
+		chown tproxy:tproxy "$path"
+		return 0
+	fi
+	[ -f "$path" ] || die "$path must be a regular file"
+	size="$(stat -c '%s' "$path")" || die "cannot stat $path"
+	owner="$(stat -c '%u' "$path")" || die "cannot stat $path"
+	mode="$(stat -c '%a' "$path")" || die "cannot stat $path"
+	[ "$size" -eq 32 ] || die "$path must contain exactly 32 bytes; refusing to replace it"
+	if [ "$owner" != "$(id -u tproxy)" ] || [ "$mode" != "400" ]; then
+		die "$path must be owned by tproxy (uid $(id -u tproxy)) with mode 400, but it is uid $owner mode $mode; fix it on the host: docker run --rm -v tproxy-data:/data --entrypoint /bin/sh $(image_name) -c 'chown 65532:65532 /data/token.key && chmod 400 /data/token.key'"
+	fi
+}
+
+image_name="${TPROXY_IMAGE_NAME:-ghcr.io/luowei729/tproxy-server:latest}"
+ensure_token_key "$state/token.key"
 
 fetch_mtproxy_file() {
 	url="$1"
@@ -164,11 +184,10 @@ cat >/run/tproxy/profiles.json <<EOF
 EOF
 
 # Set modes before changing owners: without DAC_OVERRIDE, root cannot chmod a
-# file it no longer owns.
+# file it no longer owns. The token key was already handled by ensure_token_key,
+# which must not touch an existing key for exactly that reason.
 chmod 0600 /run/tproxy/config.json /run/tproxy/profiles.json
 chown tproxy:tproxy /run/tproxy/config.json /run/tproxy/profiles.json
-chmod 0400 "$state/token.key"
-chown tproxy:tproxy "$state/token.key"
 # MTProxy routing files stay owned by root so this script can validate them on
 # every start; the tproxy group only needs read access.
 chmod 0640 "$state/proxy-secret" "$state/proxy-multi.conf"
