@@ -38,6 +38,22 @@ stock MTProxy. Nothing about the client changes: the hostname stays `xxx.com`.
   its peer. The flag enables exactly that and is set by the entrypoint; it is
   never on in the systemd deployment. The published loopback port remains the
   trust boundary.
+- **No certificate and no domain TLS on the backend.** The reverse proxy in front
+  already terminates TLS on 443, so the container speaks plain HTTP. It never
+  loads a certificate, never reads `TPROXY_TLS_*`, and never needs ports 80 or
+  443 or an ACME account. `TPROXY_HOSTNAME` is not a certificate name here: it is
+  only the value that the bridge capability is derived from and the value the
+  relay compares against the incoming `Host` header.
+
+Because of that Host comparison, the front proxy must forward the public name:
+
+```nginx
+proxy_set_header Host $host;   # xxx.com, not 127.0.0.1:65501
+```
+
+nginx's default for `proxy_pass` is `proxy_set_header Host $proxy_host`, which
+sends `127.0.0.1:65501`. Every carrier request would then be answered with the
+public 404 and the bridge page would load but never connect. Set it explicitly.
 
 ## One command
 

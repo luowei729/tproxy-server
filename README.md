@@ -99,6 +99,12 @@ uses a bridge network so MTProxy is never reachable from the host or the
 internet. `.github/workflows/docker.yml` runs the Go tests, then builds and
 pushes `linux/amd64` to GHCR; the server pulls it with `docker compose pull`.
 
+The container needs no certificate, no domain TLS, and no ports 80/443: the
+reverse proxy in front already terminates TLS, and the relay speaks plain HTTP on
+loopback. `TPROXY_HOSTNAME` is used only to derive the bridge capability and to
+check the forwarded `Host` header, so nginx must send
+`proxy_set_header Host $host`.
+
 One command, no checkout:
 
 ```bash
