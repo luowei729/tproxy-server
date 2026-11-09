@@ -130,7 +130,9 @@ func NewManager(value config.Config, tokenKey [sha256.Size]byte) *Manager {
 		done:                make(chan struct{}),
 	}
 	for i := range value.Profiles {
-		result.capabilityPrefixes[capabilityPrefix(value.Profiles[i].Capability[:])] = struct{}{}
+		for _, capability := range value.Profiles[i].AllCapabilities() {
+			result.capabilityPrefixes[capabilityPrefix(capability[:])] = struct{}{}
+		}
 	}
 	go result.cleanupLoop()
 	return result
@@ -149,9 +151,10 @@ func (m *Manager) MatchCapability(value []byte) *config.Profile {
 	}
 	matched := -1
 	for i := range m.config.Profiles {
-		equal := subtle.ConstantTimeCompare(value, m.config.Profiles[i].Capability[:])
-		if equal == 1 {
-			matched = i
+		for _, capability := range m.config.Profiles[i].AllCapabilities() {
+			if subtle.ConstantTimeCompare(value, capability[:]) == 1 {
+				matched = i
+			}
 		}
 	}
 	if matched < 0 {

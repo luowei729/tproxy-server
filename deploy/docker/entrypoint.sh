@@ -19,6 +19,26 @@ case "$TPROXY_HOSTNAME" in
 	*) die "TPROXY_HOSTNAME must contain a dot" ;;
 esac
 
+# Additional client-facing hostnames, comma separated. Each one derives its own
+# bridge capability, so a domestic entry that reverse proxies to this relay works
+# without the client switching names.
+alias_json="[]"
+alias_list=""
+if [ -n "${TPROXY_ALIAS_HOSTNAMES:-}" ]; then
+	alias_list="$(printf '%s' "$TPROXY_ALIAS_HOSTNAMES" | tr ',' ' ')"
+	for alias in $alias_list; do
+		case "$alias" in
+			*[!a-z0-9.-]*|.*|*.|*..*) die "TPROXY_ALIAS_HOSTNAMES entries must be lowercase ASCII DNS hostnames" ;;
+			esac
+		case "$alias" in
+			*.*) ;;
+			*) die "TPROXY_ALIAS_HOSTNAMES entries must contain a dot" ;;
+		esac
+		[ "$alias" != "$TPROXY_HOSTNAME" ] || die "TPROXY_ALIAS_HOSTNAMES must not repeat TPROXY_HOSTNAME"
+	done
+	alias_json="$(printf '%s\n' $alias_list | awk 'BEGIN{printf "["} {printf "%s\"%s\"", (NR>1?", ":""), $0} END{printf "]"}')"
+fi
+
 # Default proxy keeps the carrier off the host root. An explicitly empty value
 # selects the root, matching the systemd installer's --base-path none.
 TPROXY_BASE_PATH="${TPROXY_BASE_PATH-proxy}"
@@ -169,6 +189,7 @@ grep -q '^proxy_for ' "$state/proxy-multi.conf" || die "$state/proxy-multi.conf 
 cat >/run/tproxy/config.json <<EOF
 {
   "public_hostname": "$TPROXY_HOSTNAME",
+  "alias_hostnames": $alias_json,
   "base_path": "$TPROXY_BASE_PATH",
   "listen": "$TPROXY_LISTEN",
   "admin_listen": "$TPROXY_ADMIN_LISTEN",
@@ -239,6 +260,9 @@ setpriv --reuid=tproxy --regid=tproxy --clear-groups \
 	-profiles-file /run/tproxy/profiles.json -check
 
 log "hostname=$TPROXY_HOSTNAME base_path=$TPROXY_BASE_PATH listen=$TPROXY_LISTEN"
+if [ -n "$alias_list" ]; then
+	log "alias hostnames: $alias_list"
+fi
 if [ -n "$MTPROXY_NAT_ARGS" ]; then
 	log "mtproxy $MTPROXY_NAT_ARGS"
 fi

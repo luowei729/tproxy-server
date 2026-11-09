@@ -1,5 +1,6 @@
 {
   "public_hostname": "proxy.example.com",
+  "alias_hostnames": [],
   "base_path": "",
   "listen": "127.0.0.1:8080",
   "admin_listen": "127.0.0.1:8081",

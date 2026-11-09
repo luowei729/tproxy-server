@@ -27,6 +27,11 @@ const (
 // MaxBasePathLength bounds the optional relay prefix. See BASE_PATH.md.
 const MaxBasePathLength = 128
 
+// MaxAliasHostnames bounds the additional client-facing hostnames. A capability
+// binds the hostname, so each alias costs one derivation per profile and one
+// more constant-time comparison in every capability scan.
+const MaxAliasHostnames = 8
+
 // MaxCarrierBatchBytes is the largest downlink body a carrier may deliver:
 // the desktop client's browser-fallback loopback WebSocket rejects messages
 // above 2 MiB, so a larger relay batch would kill that carrier.
@@ -112,9 +117,15 @@ type Timeouts struct {
 
 type Config struct {
 	PublicHostname string `json:"public_hostname"`
-	BasePath       string `json:"base_path"`
-	Listen         string `json:"listen"`
-	AdminListen    string `json:"admin_listen"`
+	// AliasHostnames are additional client-facing hostnames that reach this
+	// relay through a front proxy, for example a domestic entry point that
+	// reverse proxies to the origin. The bridge capability binds the hostname
+	// the client types, so an alias derives its own capability; the relay must
+	// therefore know every name a client may use.
+	AliasHostnames []string `json:"alias_hostnames"`
+	BasePath       string   `json:"base_path"`
+	Listen         string   `json:"listen"`
+	AdminListen    string   `json:"admin_listen"`
 	// ContainerNetwork allows non-loopback listeners and peers for a container
 	// deployment. The container publishes exactly one port on the host
 	// loopback, so the in-container listener cannot bind 127.0.0.1 and the
@@ -161,8 +172,20 @@ type Profile struct {
 	Name        string
 	Backend     string
 	CarrierMode CarrierMode
-	Capability  [sha256.Size]byte
-	Limits      ProfileLimits
+	// Capability is the primary hostname's capability. It stays a single value
+	// because callers and tests construct a profile with it directly.
+	Capability   [sha256.Size]byte
+	Capabilities [][sha256.Size]byte
+	Limits       ProfileLimits
+}
+
+// AllCapabilities returns every derived capability, falling back to the single
+// primary field when a profile was constructed without the list.
+func (p Profile) AllCapabilities() [][sha256.Size]byte {
+	if len(p.Capabilities) != 0 {
+		return p.Capabilities
+	}
+	return [][sha256.Size]byte{p.Capability}
 }
 
 func (limits ProfileLimits) WithDefaults(global Limits) ProfileLimits {
@@ -276,7 +299,7 @@ func Load(path string, profilesOverride ...string) (Config, error) {
 	if err := result.validate(); err != nil {
 		return Config{}, err
 	}
-	profiles, err := loadProfiles(result.ProfilesFile, result.PublicHostname, result.BasePath, result.Limits)
+	profiles, err := loadProfiles(result.ProfilesFile, result.AllHostnames(), result.BasePath, result.Limits)
 	if err != nil {
 		return Config{}, err
 	}
@@ -293,6 +316,22 @@ func (c Config) validate() error {
 	}
 	if c.PublicHostname != strings.ToLower(c.PublicHostname) {
 		return errors.New("public_hostname must already be lowercase ASCII/IDNA")
+	}
+	if len(c.AliasHostnames) > MaxAliasHostnames {
+		return fmt.Errorf("alias_hostnames must contain at most %d entries", MaxAliasHostnames)
+	}
+	seenHosts := map[string]struct{}{c.PublicHostname: {}}
+	for _, host := range c.AliasHostnames {
+		if err := ValidateHostname(host); err != nil {
+			return fmt.Errorf("alias_hostnames: %w", err)
+		}
+		if host != strings.ToLower(host) {
+			return errors.New("alias_hostnames must already be lowercase ASCII/IDNA")
+		}
+		if _, exists := seenHosts[host]; exists {
+			return fmt.Errorf("duplicate hostname %q", host)
+		}
+		seenHosts[host] = struct{}{}
 	}
 	if err := ValidateBasePath(c.BasePath); err != nil {
 		return fmt.Errorf("base_path: %w", err)
@@ -393,6 +432,28 @@ func ValidateHostname(host string) error {
 		}
 	}
 	return nil
+}
+
+// AllHostnames lists the primary hostname followed by its aliases.
+func (c Config) AllHostnames() []string {
+	result := make([]string, 0, 1+len(c.AliasHostnames))
+	result = append(result, c.PublicHostname)
+	return append(result, c.AliasHostnames...)
+}
+
+// MatchHost returns the configured hostname an HTTP Host value names, so the
+// caller can render the canonical spelling into the bridge page instead of
+// echoing the request header. Only configured names match: a bridge page built
+// from an arbitrary Host would point the WebView at a name this relay does not
+// serve.
+func (c Config) MatchHost(host string) (string, bool) {
+	host = strings.TrimSuffix(strings.ToLower(host), ":443")
+	for _, candidate := range c.AllHostnames() {
+		if host == candidate {
+			return candidate, true
+		}
+	}
+	return "", false
 }
 
 // DeriveCapability binds the capability to the host, and to the base path when
@@ -550,7 +611,7 @@ func validatePublicUpstream(raw string, containerNetwork bool) error {
 	return validateLoopbackAddress(parsed.Host)
 }
 
-func loadProfiles(path, host, basePath string, limits Limits) ([]Profile, error) {
+func loadProfiles(path string, hosts []string, basePath string, limits Limits) ([]Profile, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("profiles_file: %w", err)
@@ -607,22 +668,28 @@ func loadProfiles(path, host, basePath string, limits Limits) ([]Profile, error)
 		if err != nil {
 			return nil, fmt.Errorf("profile %q: %w", input.Name, err)
 		}
-		capability := DeriveCapability(host, basePath, secret)
+		derived := make([][sha256.Size]byte, 0, len(hosts))
+		for _, host := range hosts {
+			derived = append(derived, DeriveCapability(host, basePath, secret))
+		}
 		for i := range secret {
 			secret[i] = 0
 		}
-		if _, exists := capabilities[capability]; exists {
-			return nil, fmt.Errorf("duplicate capability for profile %q", input.Name)
+		for _, capability := range derived {
+			if _, exists := capabilities[capability]; exists {
+				return nil, fmt.Errorf("duplicate capability for profile %q", input.Name)
+			}
+			capabilities[capability] = struct{}{}
 		}
 		result = append(result, Profile{
-			Name:        input.Name,
-			Backend:     input.Backend,
-			CarrierMode: carrierMode,
-			Capability:  capability,
-			Limits:      profileLimits,
+			Name:         input.Name,
+			Backend:      input.Backend,
+			CarrierMode:  carrierMode,
+			Capability:   derived[0],
+			Capabilities: derived,
+			Limits:       profileLimits,
 		})
 		names[input.Name] = struct{}{}
-		capabilities[capability] = struct{}{}
 	}
 	return result, nil
 }

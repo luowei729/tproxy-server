@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/telegramdesktop/tproxy-server/internal/config"
@@ -28,6 +29,82 @@ func newBasePathServer(t *testing.T, backend string) (*Server, string) {
 	capability := config.CapabilityString(
 		config.DeriveCapability(testHost, testBasePath, secret))
 	return application, capability
+}
+
+// A client typing an alias hostname derives a different capability, so the relay
+// must accept the alias for the Host check and render that alias into the bridge
+// page. Otherwise the WebView would fetch from the origin name while the page was
+// loaded from the alias, breaking same-origin.
+func TestAliasHostnameServesItsOwnBridge(t *testing.T) {
+	backend := startEchoBackend(t)
+	const alias = "edge.example.com"
+	secret, _ := hex.DecodeString("000102030405060708090a0b0c0d0e0f")
+	application, _ := newConfiguredTestServer(t, backend, func(value *config.Config) {
+		value.BasePath = testBasePath
+		value.AliasHostnames = []string{alias}
+		value.Profiles[0].Capability = config.DeriveCapability(testHost, testBasePath, secret)
+		value.Profiles[0].Capabilities = [][32]byte{
+			config.DeriveCapability(testHost, testBasePath, secret),
+			config.DeriveCapability(alias, testBasePath, secret),
+		}
+	})
+	defer application.Shutdown()
+	hosted := httptest.NewServer(application.Handler())
+	defer hosted.Close()
+
+	aliasCapability := config.CapabilityString(
+		config.DeriveCapability(alias, testBasePath, secret))
+	aliasRequest := request(t, http.MethodGet,
+		hosted.URL+"/"+testBasePath+"/?bridge="+aliasCapability, nil, "")
+	aliasRequest.Host = alias
+	response := perform(t, hosted.Client(), aliasRequest)
+	body := readResponse(t, response)
+	if response.StatusCode != http.StatusOK || !bytes.Contains(body, []byte("tproxy-init")) {
+		t.Fatalf("bridge under the alias failed: status %d", response.StatusCode)
+	}
+	if !bytes.Contains(body, []byte(`relayBase="https://`+alias+`/`+testBasePath+`/"`)) {
+		t.Fatal("bridge did not render the alias as its relay origin")
+	}
+	if csp := response.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "wss://"+alias) {
+		t.Fatalf("bridge CSP did not name the alias: %s", csp)
+	}
+
+	// The primary capability still works under the primary name.
+	primaryCapability := config.CapabilityString(
+		config.DeriveCapability(testHost, testBasePath, secret))
+	primary := request(t, http.MethodGet,
+		hosted.URL+"/"+testBasePath+"/?bridge="+primaryCapability, nil, "")
+	primaryResponse := perform(t, hosted.Client(), primary)
+	primaryBody := readResponse(t, primaryResponse)
+	if primaryResponse.StatusCode != http.StatusOK ||
+		!bytes.Contains(primaryBody, []byte(`relayBase="https://`+testHost+`/`+testBasePath+`/"`)) {
+		t.Fatal("primary hostname bridge regressed")
+	}
+
+	// A capability is a credential, not a host-scoped grant: one minted for the
+	// primary name also opens the bridge under an alias. That is intentional and
+	// harmless, because both names reach this same relay and the capability is
+	// already the secret. The bridge still renders the name the request used, so
+	// the WebView stays same-origin.
+	crossRequest := request(t, http.MethodGet,
+		hosted.URL+"/"+testBasePath+"/?bridge="+primaryCapability, nil, "")
+	crossRequest.Host = alias
+	crossResponse := perform(t, hosted.Client(), crossRequest)
+	crossBody := readResponse(t, crossResponse)
+	if crossResponse.StatusCode != http.StatusOK ||
+		!bytes.Contains(crossBody, []byte(`relayBase="https://`+alias+`/`+testBasePath+`/"`)) {
+		t.Fatal("a capability did not open the bridge under a configured alias")
+	}
+
+	// An unconfigured hostname stays a local 404 for authenticated traffic.
+	unknown := request(t, http.MethodGet,
+		hosted.URL+"/"+testBasePath+"/?bridge="+aliasCapability, nil, "")
+	unknown.Host = "evil.example"
+	unknownResponse := perform(t, hosted.Client(), unknown)
+	_ = readResponse(t, unknownResponse)
+	if unknownResponse.StatusCode != http.StatusNotFound {
+		t.Fatalf("unconfigured host was accepted: status %d", unknownResponse.StatusCode)
+	}
 }
 
 func TestBasePathCarrierRoundTrip(t *testing.T) {

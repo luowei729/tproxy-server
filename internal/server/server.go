@@ -148,7 +148,8 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.ContentLength != 0 {
 		s.setReadDeadline(w)
 	}
-	if r.Host != s.config.PublicHostname && r.Host != s.config.PublicHostname+":443" {
+	host, ok := s.config.MatchHost(r.Host)
+	if !ok {
 		s.serveNotFound(w, r)
 		return
 	}
@@ -157,13 +158,13 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if profile := s.bridgeProfile(r); profile != nil {
-		s.serveBridge(w, r, profile)
+		s.serveBridge(w, r, profile, host)
 		return
 	}
 	s.serveNotFound(w, r)
 }
 
-func (s *Server) serveBridge(w http.ResponseWriter, r *http.Request, profile *config.Profile) {
+func (s *Server) serveBridge(w http.ResponseWriter, r *http.Request, profile *config.Profile, host string) {
 	clientIP, err := s.clientIP(r)
 	if err != nil {
 		s.serveNotFound(w, r)
@@ -175,7 +176,7 @@ func (s *Server) serveBridge(w http.ResponseWriter, r *http.Request, profile *co
 		return
 	}
 	page, err := bridge.Render(
-		s.config.PublicHostname,
+		host,
 		s.config.BasePath,
 		token,
 		string(profile.CarrierMode.WithDefault()),

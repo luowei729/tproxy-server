@@ -308,6 +308,54 @@ distinguishable relay error. If the site runs as an application on the host, set
 The relay requires exactly one `X-Forwarded-For` value; `$proxy_add_x_forwarded_for`
 can produce a list and is rejected.
 
+## Domestic entry point (alias hostnames)
+
+The bridge capability is derived from the hostname the client types, so a second
+name cannot simply reverse proxy to the first: the two derive different
+capabilities and the relay would answer the alias with the public site. Give the
+relay every client-facing name:
+
+```bash
+-e TPROXY_ALIAS_HOSTNAMES=edge.example.com      # comma separated, up to 8
+```
+
+The relay then derives a capability per name per profile, accepts any of them in
+the `Host` check, and renders the name the request actually used into the bridge
+page. That last part matters: a page loaded from `edge.example.com` must fetch and
+open WebSockets on `edge.example.com`, or the WebView is no longer same-origin.
+
+The domestic entry only has to proxy the prefix. TLS terminates there with the
+alias certificate, and the origin is reached with its own name as SNI:
+
+```nginx
+location ^~ /proxy/ {
+    proxy_pass https://origin.example.com;          # the origin hostname
+    proxy_ssl_server_name on;
+    proxy_ssl_name origin.example.com;              # SNI, so the origin picks its vhost
+    proxy_http_version 1.1;
+
+    proxy_set_header Host $host;            # edge.example.com, matched as an alias
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    proxy_read_timeout 90s;
+    proxy_send_timeout 90s;
+    proxy_buffering off;
+    proxy_request_buffering off;
+
+    client_max_body_size 4m;
+    access_log off;
+}
+```
+
+`$host` is the name the client typed, which is what the relay must see. Sending
+the origin's name here would make the bridge point back at the origin, bypassing
+the domestic entry for every carrier request.
+
+A capability is a credential, not a host-scoped grant: one minted for the primary
+name also opens the bridge under an alias. Both names reach the same relay, so
+that grants nothing extra.
+
 ## Client link
 
 ```bash

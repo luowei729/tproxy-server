@@ -141,6 +141,60 @@ func TestContainerNetworkListenerPolicy(t *testing.T) {
 	}
 }
 
+func TestAliasHostnames(t *testing.T) {
+	value := Defaults()
+	value.PublicHostname = "origin.example.com"
+	value.ProfilesFile = "profiles.json"
+	value.PublicDir = t.TempDir()
+	if err := os.WriteFile(filepath.Join(value.PublicDir, "index.html"), []byte("site"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	value.AliasHostnames = []string{"edge.example.com"}
+	if err := value.validate(); err != nil {
+		t.Fatalf("valid alias was rejected: %v", err)
+	}
+	for _, host := range []string{"origin.example.com", "origin.example.com:443", "ORIGIN.EXAMPLE.COM", "edge.example.com", "edge.example.com:443"} {
+		matched, ok := value.MatchHost(host)
+		if !ok {
+			t.Fatalf("host %q did not match", host)
+		}
+		if matched != "origin.example.com" && matched != "edge.example.com" {
+			t.Fatalf("host %q matched the noncanonical spelling %q", host, matched)
+		}
+	}
+	for _, host := range []string{"other.example", "origin.example.com:8443", "origin.example.com.", "", "origin.example.com.evil"} {
+		if _, ok := value.MatchHost(host); ok {
+			t.Fatalf("unexpected host %q matched", host)
+		}
+	}
+	if got := value.AllHostnames(); len(got) != 2 || got[0] != "origin.example.com" || got[1] != "edge.example.com" {
+		t.Fatalf("unexpected hostname list: %v", got)
+	}
+
+	for name, aliases := range map[string][]string{
+		"duplicate of primary": {"origin.example.com"},
+		"duplicate alias":      {"edge.example.com", "edge.example.com"},
+		"uppercase":            {"EDGE.example.com"},
+		"ip address":           {"192.0.2.1"},
+		"single label":         {"localhost"},
+		"trailing dot":         {"edge.example.com."},
+	} {
+		candidate := value
+		candidate.AliasHostnames = aliases
+		if err := candidate.validate(); err == nil {
+			t.Fatalf("%s alias list was accepted: %v", name, aliases)
+		}
+	}
+	tooMany := value
+	tooMany.AliasHostnames = make([]string, MaxAliasHostnames+1)
+	for i := range tooMany.AliasHostnames {
+		tooMany.AliasHostnames[i] = "alias" + strconv.Itoa(i) + ".example"
+	}
+	if err := tooMany.validate(); err == nil {
+		t.Fatal("alias list above the limit was accepted")
+	}
+}
+
 func TestPlainSecretMayBeginWithEE(t *testing.T) {
 	secret, err := DecodeSecret("ee0102030405060708090a0b0c0d0e0f")
 	if err != nil || len(secret) != 16 || secret[0] != 0xee {
